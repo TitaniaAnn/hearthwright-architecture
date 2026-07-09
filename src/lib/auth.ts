@@ -1,7 +1,21 @@
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
 export type Role = "admin" | "employee";
+
+/** Resolve the public.users.id for an auth user id, or null. */
+async function appUserIdFor(
+  supabase: SupabaseClient,
+  authUserId: string,
+): Promise<string | null> {
+  const { data } = await supabase
+    .from("users")
+    .select("id")
+    .eq("auth_user_id", authUserId)
+    .maybeSingle();
+  return data?.id ?? null;
+}
 
 /** The current session's public.users.id, or null. */
 export async function getAppUserId(): Promise<string | null> {
@@ -10,12 +24,30 @@ export async function getAppUserId(): Promise<string | null> {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return null;
+  return appUserIdFor(supabase, user.id);
+}
+
+/**
+ * The caller's employee role, or null. Scoped to the caller's OWN row: the
+ * employee_roles SELECT policy is `user_id = app_user_id() OR is_admin()`, so it
+ * also exposes every row to admins (so they can manage roles). An unfiltered
+ * `.maybeSingle()` therefore returns multiple rows for an admin once a second
+ * employee exists and silently resolves to null — locking admins out. Filter by
+ * the caller's user id so exactly their row (0 or 1) comes back.
+ */
+async function roleForAuthUser(
+  supabase: SupabaseClient,
+  authUserId: string,
+): Promise<Role | null> {
+  const appUserId = await appUserIdFor(supabase, authUserId);
+  if (!appUserId) return null;
+
   const { data } = await supabase
-    .from("users")
-    .select("id")
-    .eq("auth_user_id", user.id)
+    .from("employee_roles")
+    .select("role")
+    .eq("user_id", appUserId)
     .maybeSingle();
-  return data?.id ?? null;
+  return (data?.role as Role | undefined) ?? null;
 }
 
 /** The current employee role, or null for a public/unauthenticated user. */
@@ -25,14 +57,7 @@ export async function getRole(): Promise<Role | null> {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user) return null;
-
-  // RLS limits this to the caller's own row.
-  const { data } = await supabase
-    .from("employee_roles")
-    .select("role")
-    .maybeSingle();
-
-  return (data?.role as Role | undefined) ?? null;
+  return roleForAuthUser(supabase, user.id);
 }
 
 /**
@@ -47,11 +72,7 @@ export async function requireRole(required: Role) {
   } = await supabase.auth.getUser();
   if (!user) redirect("/login");
 
-  const { data } = await supabase
-    .from("employee_roles")
-    .select("role")
-    .maybeSingle();
-  const role = data?.role as Role | undefined;
+  const role = await roleForAuthUser(supabase, user.id);
 
   const ok =
     required === "employee"

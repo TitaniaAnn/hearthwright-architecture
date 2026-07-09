@@ -15,6 +15,11 @@ import { createClient, type SupabaseClient } from "jsr:@supabase/supabase-js@2";
 // (2x this window).
 const MAX_SKEW_MS = 90 * 1000;
 
+// Hard cap on the request body. The per-batch row caps (MAX_EVENTS etc.) bound
+// row COUNT but not payload size, so a single request could otherwise ship a
+// huge body. ~1 MB is generous for a batch of telemetry/feedback.
+const MAX_BODY_BYTES = 1_000_000;
+
 export class VerifyError extends Error {
   status: number;
   constructor(status: number, message: string) {
@@ -29,7 +34,7 @@ export interface ApiKeyRow {
   scopes: string[];
 }
 
-async function sha256Hex(input: string): Promise<string> {
+export async function sha256Hex(input: string): Promise<string> {
   const data = new TextEncoder().encode(input);
   const digest = await crypto.subtle.digest("SHA-256", data);
   return Array.from(new Uint8Array(digest))
@@ -53,7 +58,16 @@ export async function verifyApiKeyRequest<
   if (!match) throw new VerifyError(401, "missing bearer token");
   const rawKey = match[1].trim();
 
+  // Reject oversized bodies before buffering/processing. Content-Length covers
+  // the common case; the post-read length check backstops chunked uploads.
+  const declaredLen = Number(req.headers.get("content-length") ?? "");
+  if (Number.isFinite(declaredLen) && declaredLen > MAX_BODY_BYTES) {
+    throw new VerifyError(413, "request body too large");
+  }
   const bodyText = await req.text();
+  if (bodyText.length > MAX_BODY_BYTES) {
+    throw new VerifyError(413, "request body too large");
+  }
   let body: TBody;
   try {
     body = JSON.parse(bodyText) as TBody;
@@ -184,12 +198,54 @@ export function jsonResponse(status: number, body: unknown): Response {
   });
 }
 
+/**
+ * Best-effort fan-out of an edge 5xx to the same alerting sink the Next app
+ * uses (`ERROR_WEBHOOK_URL`). No-op when unset — the console.error line above is
+ * the durable record. Without this the ingestion functions — the product-facing
+ * telemetry intake — could 500 indefinitely while only the Next app's failures
+ * ever paged anyone. Delivery is fire-and-forget; on Supabase edge,
+ * `EdgeRuntime.waitUntil` keeps the isolate alive until the POST settles. Set the
+ * var for edge with `supabase secrets set ERROR_WEBHOOK_URL=...`.
+ */
+export function reportEdgeError(scope: string, message: string): void {
+  const url = Deno.env.get("ERROR_WEBHOOK_URL");
+  if (!url) return;
+  const send = fetch(url, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      text: `[rcp] ${scope}: ${message}`,
+      source: "rcp-edge",
+      scope,
+      message,
+      at: new Date().toISOString(),
+    }),
+    signal: AbortSignal.timeout(5000),
+  })
+    .then(() => {})
+    .catch(() => {
+      // Best-effort — the stderr line is the durable record.
+    });
+  const er = (globalThis as { EdgeRuntime?: { waitUntil?: (p: Promise<unknown>) => void } })
+    .EdgeRuntime;
+  if (er?.waitUntil) er.waitUntil(send);
+  else void send;
+}
+
 export function errorResponse(e: unknown): Response {
   if (e instanceof VerifyError) {
+    // 4xx messages are our own validation/auth text (safe to return). 5xx
+    // VerifyErrors wrap raw DB/PostgREST errors — log those, return generic.
+    if (e.status >= 500) {
+      console.error("[ingest] internal error:", e.message);
+      reportEdgeError("ingest", e.message);
+      return jsonResponse(e.status, { error: "internal" });
+    }
     return jsonResponse(e.status, { error: e.message });
   }
   const detail = e instanceof Error ? e.message : String(e);
   console.error("[ingest] internal error:", detail);
+  reportEdgeError("ingest", detail);
   return jsonResponse(500, { error: "internal" });
 }
 

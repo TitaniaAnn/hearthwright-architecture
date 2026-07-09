@@ -8,8 +8,10 @@ A **reference architecture**, not a runnable product. It publishes a curated,
 secret-free subset of a private multi-surface Next.js + Supabase control plane.
 [ARCHITECTURE.md](ARCHITECTURE.md) and [README.md](README.md) are the primary
 deliverables; the code exists to make their claims verifiable. The canonical
-check is `npm test` (pure-logic, no DB) plus `supabase db reset` +
-`supabase/tests/rls_test.sql` for the RLS boundary.
+check is `npm test` (pure-logic + source-level wiring guards, no DB) plus
+`supabase db reset` and the four SQL suites in `supabase/tests/` (`rls_test`,
+`grants_test`, `function_privileges_test`, `rate_limit_test`) for the database
+boundary.
 
 `npm run dev` is **not** the intended entry point — the marketing/admin/dashboard
 *pages* are deliberately omitted from this cut (see ARCHITECTURE.md § "What this
@@ -37,6 +39,19 @@ included because that's where the architecture lives.
   events. Keep that separation.
 - **Counters and balances mutate via atomic RPCs**, not read-modify-write in
   app code (`increment_download` in `0005`).
+- **Grants are a separate layer beneath RLS** (`0020`–`0022`): a new
+  public-read table needs both a `_public_read` policy AND an explicit anon
+  SELECT grant; never `GRANT ALL` (TRUNCATE isn't RLS-gated). New
+  `SECURITY DEFINER` RPCs get the `0018`-style revoke-from-PUBLIC /
+  grant-to-service_role pair unless RLS policies must call them.
+- **Failures are logged, not swallowed** — server code that degrades (returns a
+  fallback, redirects with `?error=`) calls `logError`/`selectOrLog`
+  (`src/lib/observability.ts`) first, with a dotted scope
+  (`admin.posts.updatePost`). No PII in `meta`. Env vars are read via
+  `requireEnv`, except static `NEXT_PUBLIC_*` access in Client Components.
+- **One correlation id per request** (`x-rcp-request-id`): minted/reused in
+  `middleware.ts`, read via `withRequestId` (`src/lib/request-context.ts`).
+  Keep it out of the Edge runtime imports — `request-context.ts` is Node-only.
 - **Migration numbers preserve the production sequence**; gaps (0008–0016) are
   intentional and the runner tolerates them. New migrations append; never edit
   an applied one.

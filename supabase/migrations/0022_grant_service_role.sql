@@ -1,0 +1,24 @@
+-- ============================================================
+-- Reference Control Plane — 0022 base table privileges for the service_role
+--
+-- Third companion to 0020 (anon public-read) and 0021 (authenticated DML). The
+-- server-side privileged paths — the signed-download route, the edge ingestion
+-- functions, the maintenance jobs — use the service_role key
+-- (createAdminClient / adminClientFromEnv). service_role BYPASSES RLS, but like
+-- every role it must first hold the base table privilege to reach a table at
+-- all, and the schema relied on Supabase's default privileges (hosted grants
+-- service_role ALL on the public schema) to provide it. The local CLI stack
+-- doesn't apply those defaults, so in it (and in CI) a service-role `select
+-- from public.products` fails with SQLSTATE 42501 "permission denied for table
+-- products" — surfaced by the /api/health probe, and latent in the download
+-- route. This closes that gap and makes the local posture match hosted.
+--
+-- Mirrors 0021: `select, insert, update, delete` (not `grant all` — TRUNCATE
+-- isn't needed and isn't part of the app's use). service_role bypasses RLS, so
+-- these grants are the app's trusted server-side surface; every caller already
+-- runs behind auth/scope checks (verify-api-key, requireRole, the rate limiter
+-- on the public forms). Function EXECUTE grants to service_role are handled
+-- separately (0018/0019). Idempotent — a no-op where the grant exists.
+-- ============================================================
+
+grant select, insert, update, delete on all tables in schema public to service_role;

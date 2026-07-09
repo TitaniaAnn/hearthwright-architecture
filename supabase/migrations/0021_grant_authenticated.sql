@@ -1,0 +1,22 @@
+-- ============================================================
+-- Reference Control Plane — 0021 base table privileges for the authenticated role
+--
+-- Companion to 0020 (which handled anon's public-read grants). Logged-in users
+-- act as the `authenticated` role, and every table access is gated by RLS —
+-- which is enabled on every table in the schema (asserted by
+-- supabase/tests/grants_test.sql). But a role must first hold the base table
+-- privilege to reach a table at all, and the schema relied on Supabase's
+-- default privileges to give `authenticated` that access. The local CLI stack
+-- doesn't apply those defaults, so in it (and in CI) staff pages 403:
+-- requireRole()'s lookup of public.users / public.employee_roles hits
+-- "permission denied" *before* RLS is consulted, so the role resolves empty and
+-- requireRole redirects to /?error=forbidden.
+--
+-- Grant `authenticated` the RLS-gated DML on the whole public schema. RLS still
+-- decides every row and every operation, so this exposes nothing a policy
+-- wouldn't — it only lets a logged-in request reach the table. Deliberately NOT
+-- `grant all`: that would include TRUNCATE, which RLS does NOT gate. Anon keeps
+-- its narrow, explicit public-read grants from 0020.
+-- ============================================================
+
+grant select, insert, update, delete on all tables in schema public to authenticated;
