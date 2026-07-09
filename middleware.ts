@@ -8,7 +8,13 @@ import { updateSession } from "@/lib/supabase/middleware";
  * backstop.
  */
 export async function middleware(request: NextRequest) {
-  const { response, user } = await updateSession(request);
+  // One correlation id per request, spanning client → app → edge. Reuse an
+  // inbound id if the caller (a product's edge client, a retry) already set one,
+  // so the trace joins up; otherwise mint a fresh one. `crypto` is a global in
+  // the Edge runtime.
+  const requestId =
+    request.headers.get("x-rcp-request-id") ?? crypto.randomUUID();
+  const { response, user } = await updateSession(request, requestId);
 
   const { pathname } = request.nextUrl;
   const isProtected =
@@ -18,7 +24,9 @@ export async function middleware(request: NextRequest) {
     const url = request.nextUrl.clone();
     url.pathname = "/login";
     url.searchParams.set("redirectTo", pathname);
-    return NextResponse.redirect(url);
+    const redirect = NextResponse.redirect(url);
+    redirect.headers.set("x-rcp-request-id", requestId);
+    return redirect;
   }
 
   return response;

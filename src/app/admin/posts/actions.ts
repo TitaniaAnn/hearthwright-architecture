@@ -5,6 +5,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { createClient } from "@/lib/supabase/server";
 import { requireRole, getAppUserId } from "@/lib/auth";
+import { logError } from "@/lib/observability";
 
 function slugify(s: string): string {
   return s
@@ -28,7 +29,10 @@ export async function createPost(formData: FormData) {
     .insert({ title, slug, author_user_id: me })
     .select("id")
     .single();
-  if (error) throw new Error(error.message);
+  if (error) {
+    logError("admin.posts.createPost", error);
+    throw new Error(error.message);
+  }
 
   revalidatePath("/admin/posts");
   redirect(`/admin/posts/${data.id}`);
@@ -88,7 +92,10 @@ export async function updatePost(formData: FormData) {
       published_at: parsed.is_published ? new Date().toISOString() : null,
     })
     .eq("id", parsed.id);
-  if (error) throw new Error(error.message);
+  if (error) {
+    logError("admin.posts.updatePost", error);
+    throw new Error(error.message);
+  }
 
   revalidatePath("/admin/posts");
   revalidatePath("/posts");
@@ -104,7 +111,10 @@ export async function deletePost(formData: FormData) {
     .from("posts")
     .update({ deleted_at: new Date().toISOString(), is_published: false })
     .eq("id", id);
-  if (error) throw new Error(error.message);
+  if (error) {
+    logError("admin.posts.deletePost", error);
+    throw new Error(error.message);
+  }
   revalidatePath("/admin/posts");
   revalidatePath("/posts");
   redirect("/admin/posts");
