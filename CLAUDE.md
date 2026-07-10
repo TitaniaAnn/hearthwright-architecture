@@ -44,12 +44,12 @@ included because that's where the architecture lives.
   SELECT grant; never `GRANT ALL` (TRUNCATE isn't RLS-gated). New
   `SECURITY DEFINER` RPCs get the `0018`-style revoke-from-PUBLIC /
   grant-to-service_role pair unless RLS policies must call them.
-- **Failures are logged, not swallowed** — server code that degrades (returns a
-  fallback, redirects with `?error=`) calls `logError`/`selectOrLog`
-  (`src/lib/observability.ts`) first, with a dotted scope
-  (`admin.posts.updatePost`). No PII in `meta`. Env vars are read via
-  `requireEnv`, except static `NEXT_PUBLIC_*` access in Client Components.
-- **One correlation id per request** (`x-rcp-request-id`): minted/reused in
+- **Failures are logged, not swallowed** — server
+
+## Reference — Observability Engineering notes
+
+[OBSERVABILITY-NOTES.md](OBSERVABILITY-NOTES.md) — key concepts from *Observability Engineering* 2e (O'Reilly), framed for this repo. Consult when adding instrumentation, telemetry, SLOs, or evaluating observability tooling. This repo currently has no instrumentation layer.
+d per request** (`x-rcp-request-id`): minted/reused in
   `middleware.ts`, read via `withRequestId` (`src/lib/request-context.ts`).
   Keep it out of the Edge runtime imports — `request-context.ts` is Node-only.
 - **Migration numbers preserve the production sequence**; gaps (0008–0016) are
